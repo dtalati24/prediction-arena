@@ -6,6 +6,7 @@ edge with them). Each generation is 400 fresh markets; fitness is total profit.
 Run `python evolve.py` for the Phase 2 run, check and chart.
 """
 import argparse
+import time
 from collections import defaultdict
 
 import numpy as np
@@ -91,11 +92,15 @@ def next_generation(pop, fitness, rng):
     return pop
 
 
-def evolve(generations=300, seed=0, fee=FEE):
+def evolve(generations=300, seed=0, fee=FEE, progress=False):
     rng = np.random.default_rng(seed)
     pop = random_population(rng)
     hist = defaultdict(list)
+    start = time.time()
     for g in range(generations):
+        if progress and g and g % 50 == 0:
+            el = time.time() - start
+            print(f"gen {g}/{generations}  {el / 60:.0f} min elapsed, ~{el / g * (generations - g) / 60:.0f} min left", flush=True)
         # Each forecaster's fixed error per market: a shared part (same for everyone) plus its own part.
         z = np.sqrt(ERR_CORR) * rng.standard_normal((N_MARKETS, 1)) + np.sqrt(1 - ERR_CORR) * rng.standard_normal((N_MARKETS, N_EVO))
         err = z * pop["sigma"]
@@ -136,7 +141,7 @@ if __name__ == "__main__":
     ap.add_argument("--gens", type=int, default=1000)
     args = ap.parse_args()
     tag = (f"_fee{args.fee:g}" if args.fee != FEE else "") + (f"_seed{args.seed}" if args.seed else "")
-    pop, h = evolve(args.gens, seed=args.seed, fee=args.fee)
+    pop, h = evolve(args.gens, seed=args.seed, fee=args.fee, progress=True)
     assert np.allclose(h["share"].sum(1), 1)
     np.savez(f"phase2{tag}.npz", **h)  # per-generation history, for analysis
     dashboard(h, f"phase3{tag}.png")

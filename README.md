@@ -13,7 +13,7 @@ an edge against a population that evolves to exploit them.
 - **Market maker.** An LMSR (logarithmic market scoring rule) market maker fills the net order of
   all bots each tick. Its worst-case loss per market is capped at `b * ln 2`.
 - **Batch auction with limit orders.** Each tick, all orders clear at one price. Price-sensitive bots
-  say how many shares they'd hold at any price, and the clearing price is solved (by bisection).
+  say how many shares they'd hold at any price, and the clearing price is solved exactly.
   Without this, bots reacting to the old price all piled in together and the price swung between
   ~0 and ~1 every tick.
 - **Full collateral, as on real prediction markets.** A long position must be paid for in cash and a
@@ -21,7 +21,9 @@ an edge against a population that evolves to exploit them.
   An early version without this let bots run up debt (one lost 240 on a budget of 100), and that fake
   money distorted the evolution results. A built-in check now has reckless bots trade at random at
   fees of 0, 1c and 5c and confirms nobody loses more than they had.
-- **Speed.** One generation (400 markets x 200 ticks, 150 bots) takes ~3 s, all vectorised in numpy.
+- **Speed.** All vectorised in numpy. The clearing price takes 4-6 evaluations of everyone's orders
+  per tick (a guarded Newton/secant search that gives the same answer as 20 rounds of bisection),
+  so one generation (400 markets x 200 ticks, 150 bots) takes ~1-4 s on a laptop.
 
 ## Phase 1: does the market work?
 
@@ -120,8 +122,28 @@ perfect-bot benchmark, so they come from the news jumps built into the truth, no
 There's no favourite-longshot bias either: punters here trade at random, while real punters overbet
 longshots, and adding that preference is the obvious next experiment.
 
-**Fees:** an earlier run suggested a 1c fee makes prices several times less accurate; it's being
-re-run on the corrected market.
+### Fees: a 1c fee makes prices 2.4x less accurate
+
+Same setup with a fee per share traded, seeds 0 and 2, 300 generations each, averages over
+generations 150-299, averaged over the two seeds (they tell the same story):
+
+| | no fee | 0.2c fee | 1c fee |
+|---|---|---|---|
+| price-to-truth gap | 0.041 | 0.043 | 0.098 |
+| calibration error | 0.009 | 0.010 | 0.046 |
+| share of news priced in after 1 tick | 0.98 | 0.98 | 0.89 |
+| forecaster size / error sigma | 92 / 0.34 | 90 / 0.35 | 2-3 / ~1.0 |
+| trend bots (share, typical size) | ~51%, active | ~65%, size ~0.02 | ~1% |
+| punter loss per market (mostly fees) | 0.06 | 1.67 | 8.0 |
+
+- **0.2c:** forecasters barely notice, but trend-following stops paying: trend bots survive only by
+  shrinking to almost nothing. Accuracy is almost unchanged.
+- **1c:** a forecaster's edge per share is smaller than the fee, so evolution shrinks forecasters to
+  size 2-3 and lets them stop paying for accuracy (sigma ~1). Nobody corrects mispricings, so the
+  gap more than doubles, with spikes up to 0.25. The punters' losses now go to the exchange, not to
+  traders.
+
+![1c fee, seed 0](phase2_fee0.01.png)
 
 ## Run it
 
@@ -130,7 +152,7 @@ python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt   # macOS/Linux: .venv/bin/pip
 .venv/Scripts/python market.py      # Phase 1 checks + chart
 .venv/Scripts/python measure.py     # Phase 3 measure checks
-.venv/Scripts/python evolve.py      # Phase 2+3, 1000 generations (~50 min); --gens, --seed, --fee
+.venv/Scripts/python evolve.py      # Phase 2+3, 1000 generations (~20-40 min); --gens, --seed, --fee
 ```
 
 ## Roadmap

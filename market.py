@@ -9,6 +9,8 @@ Run `python market.py` for the Phase 1 check and chart.
 import numpy as np
 from scipy.special import expit, logit, ndtr
 
+GRID = 40 / 2**20  # clearing-price precision in log-odds (20 halvings of [-20, 20])
+
 
 def lo(p):
     """Log-odds, clipped so prices/truth at 0 or 1 stay finite."""
@@ -66,16 +68,48 @@ def simulate(order_fn, n_bots, n_markets=100, T=200, b=50.0, sigma=1.0,
             # If a bot is ever short of collateral (rounding), it may be forced to close its
             # position, never pushed into a bigger opposite one.
             hi, lo_ = np.maximum(hi, np.minimum(shares, 0)), np.minimum(lo_, np.maximum(shares, 0))
-            return np.clip(shares + d + a * (e - L[:, None]), lo_, hi) - shares
+            target = shares + d + a * (e - L[:, None])
+            return np.clip(target, lo_, hi) - shares, (target > lo_) & (target < hi)
 
         # Clearing price: LMSR log-odds after the trade is (x + net order) / b, and orders are
-        # judged at that same price. Net order falls as L rises, so bisect for b*L = x + net order(L).
-        L_lo, L_hi = np.full(M, -20.0), np.full(M, 20.0)
-        for _ in range(20):
-            mid = (L_lo + L_hi) / 2
-            up = x + orders(mid).sum(1) > b * mid
-            L_lo, L_hi = np.where(up, mid, L_lo), np.where(up, L_hi, mid)
-        d = orders((L_lo + L_hi) / 2)
+        # judged at that same price. Net order falls as L rises, so solve b*L = x + net order(L).
+        # The answer is the middle of the step, on a grid of 2^20 steps over [-20, 20], that holds
+        # the root: exactly what 20 rounds of bisection give. Guesses only pick which grid point to
+        # test, so they change the speed, never the answer. Each guess is a Newton step (slope =
+        # b + total size of the bots not at a limit), or, if that lands outside the bracket or the
+        # last step didn't halve it, false position with the Illinois fix (Newton alone stalled
+        # when many bots hit their limits).
+        # ~4-6 evaluations instead of 21; after 12 tries, plain bisection takes over as a fallback.
+        k_lo, k_hi = np.zeros(M, np.int64), np.full(M, 2**20)
+        f_lo, f_hi = np.full(M, np.nan), np.full(M, np.nan)  # net - b*L at the bracket ends, once tested
+        last = np.zeros(M)                                   # which end moved last: +1 low, -1 high
+        width, halved = k_hi - k_lo, np.ones(M, bool)        # did the last step halve the bracket?
+        L = x / b
+        for i in range(40):
+            open_ = k_hi - k_lo > 1
+            if not open_.any():
+                break
+            L_lo, L_hi = -20 + k_lo * GRID, -20 + k_hi * GRID
+            newton_ok = np.isnan(f_lo + f_hi) | ((L > L_lo) & (L < L_hi) & halved)
+            L = np.where(newton_ok, L, L_lo + f_lo * (L_hi - L_lo) / (f_lo - f_hi))
+            k = np.floor((np.clip(L, -21, 21) + 20) / GRID).astype(np.int64) if i < 12 else (k_lo + k_hi) // 2
+            k = np.clip(k, k_lo + 1, k_hi - 1)
+            Lk = -20 + k * GRID
+            o, free = orders(Lk)
+            net = x + o.sum(1)
+            up = net > b * Lk
+            f = net - b * Lk
+            # Illinois: if the same end moves twice in a row, halve the other end's value.
+            f_hi = np.where(open_ & up & (last == 1), f_hi / 2, f_hi)
+            f_lo = np.where(open_ & ~up & (last == -1), f_lo / 2, f_lo)
+            k_lo, f_lo = np.where(open_ & up, k, k_lo), np.where(open_ & up, f, f_lo)
+            k_hi, f_hi = np.where(open_ & ~up, k, k_hi), np.where(open_ & ~up, f, f_hi)
+            last = np.where(open_, np.where(up, 1, -1), last)
+            halved = 2 * (k_hi - k_lo) <= width
+            width = k_hi - k_lo
+            L = Lk + f / (b + (a * free).sum(1))
+        assert (k_hi - k_lo == 1).all()
+        d = orders(((-20 + k_lo * GRID) + (-20 + k_hi * GRID)) / 2)[0]
 
         # Batch auction: LMSR fills the net order, everyone pays the same average price.
         D = d.sum(1)
