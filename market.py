@@ -7,52 +7,92 @@ All markets run side by side as numpy arrays.
 Run `python market.py` for the Phase 1 check and chart.
 """
 import numpy as np
-from scipy.special import expit, ndtr
+from scipy.special import expit, logit, ndtr
+
+
+def lo(p):
+    """Log-odds, clipped so prices/truth at 0 or 1 stay finite."""
+    return np.clip(logit(p), -6, 6)
 
 
 def simulate(order_fn, n_bots, n_markets=100, T=200, b=50.0, sigma=1.0,
-             news_prob=0.02, news_size=5.0, budget=100.0, limit=100.0, seed=0):
+             news_prob=0.02, news_size=5.0, budget=100.0, limit=100.0, fee=0.0, seed=0):
     """Run n_markets markets for T ticks.
 
-    order_fn(t, price_hist, true_p, shares, rng) returns a (n_markets, n_bots) array of orders
-    in YES shares (+ buy, - sell). price_hist is (t+1, n_markets); true_p is (n_markets,).
+    order_fn(t, price_hist, truth, shares, rng) returns (d, a, e), each (n_markets, n_bots).
+    A bot's order in YES shares (+ buy, - sell) is d + a * (e - L), where L is the clearing
+    log-odds of this tick's batch auction: d is a plain market order, and a > 0 makes the bot
+    price-sensitive (like a limit order) around its valuation e in log-odds.
+    price_hist is (t+1, n_markets); truth is the whole (T+1, n_markets) true-probability path,
+    so honest bots should only read truth[:t+1].
     """
     rng = np.random.default_rng(seed)
     M, N = n_markets, n_bots
+
+    # The true-probability path comes first: trading never moves it, and insiders peek ahead.
+    # The lead does a random walk with news jumps; truth = chance it stays positive with the time left.
     var = sigma**2 + news_prob * news_size**2  # per-tick variance of the lead, news folded in
-    lead = np.zeros(M)
+    steps = sigma * rng.standard_normal((T, M))
+    news = rng.random((T, M)) < news_prob  # news[t] moves the lead between tick t and t+1
+    steps += news * news_size * rng.standard_normal((T, M))
+    lead = np.vstack([np.zeros(M), steps.cumsum(0)])
+    left = np.arange(T, 0, -1)[:, None]
+    # Note: normal approximation ignores the jumps' fat tails; fine while jumps are rare
+    truth = np.vstack([ndtr(lead[:-1] / np.sqrt(var * left)), lead[-1] > 0])
+
     x = np.zeros(M)  # net YES shares the LMSR has sold; its price is expit(x / b)
     cash = np.full((M, N), budget)
     shares = np.zeros((M, N))
     mm_cash = np.zeros(M)
     prices = np.empty((T + 1, M))
-    truth = np.empty((T + 1, M))
-    prices[0] = truth[0] = 0.5
+    prices[0] = 0.5
 
     for t in range(T):
-        d = order_fn(t, prices[:t + 1], truth[t], shares, rng)
-        d = np.clip(shares + d, -limit, limit) - shares       # position limit
-        d[cash + shares * prices[t][:, None] <= 0] = 0          # bust bots sit out
+        d, a, e = order_fn(t, prices[:t + 1], truth, shares, rng)
+
+        def orders(L):
+            """Each bot's order if the batch clears at log-odds L, within its limits.
+
+            Full collateral, as on real prediction markets: a long must be paid for in cash, and a
+            short (YES sold) must keep $1 per share in cash, so no bot can lose more than its budget.
+            The fill price lies between the start price and the clearing price, so buyers are
+            judged at the higher of the two plus the fee, and sellers at the lower minus the fee.
+            """
+            pc = expit(L)[:, None]
+            buy = np.maximum(prices[t][:, None], pc) + fee         # most a buyer can pay per share
+            sell = np.minimum(prices[t][:, None], pc) - fee        # least a seller can receive
+            hi = np.minimum(limit, shares + cash / buy)
+            lo_ = np.maximum(-limit, -(cash + shares * sell) / (1 - sell))
+            # If a bot is ever short of collateral (rounding), it may be forced to close its
+            # position, never pushed into a bigger opposite one.
+            hi, lo_ = np.maximum(hi, np.minimum(shares, 0)), np.minimum(lo_, np.maximum(shares, 0))
+            return np.clip(shares + d + a * (e - L[:, None]), lo_, hi) - shares
+
+        # Clearing price: LMSR log-odds after the trade is (x + net order) / b, and orders are
+        # judged at that same price. Net order falls as L rises, so bisect for b*L = x + net order(L).
+        L_lo, L_hi = np.full(M, -20.0), np.full(M, 20.0)
+        for _ in range(20):
+            mid = (L_lo + L_hi) / 2
+            up = x + orders(mid).sum(1) > b * mid
+            L_lo, L_hi = np.where(up, mid, L_lo), np.where(up, L_hi, mid)
+        d = orders((L_lo + L_hi) / 2)
 
         # Batch auction: LMSR fills the net order, everyone pays the same average price.
         D = d.sum(1)
         cost = b * (np.logaddexp(0, (x + D) / b) - np.logaddexp(0, x / b))
         fill = np.where(D != 0, cost / np.where(D != 0, D, 1), prices[t])
-        cash -= d * fill[:, None]
+        # Fee per share traded goes to the exchange; like real exchanges, it never exceeds the
+        # contract's price (or 1 - price), so selling never costs more than it brings in.
+        fee_ps = np.minimum(fee, np.minimum(fill, 1 - fill))[:, None]
+        cash -= d * fill[:, None] + fee_ps * np.abs(d)
         shares += d
         mm_cash += cost
         x += D
         prices[t + 1] = expit(x / b)
 
-        # The lead moves; true probability = chance it stays positive with the time left.
-        lead += sigma * rng.standard_normal(M) + (rng.random(M) < news_prob) * news_size * rng.standard_normal(M)
-        left = T - t - 1
-        # Note: normal approximation ignores the jumps' fat tails; fine while jumps are rare
-        truth[t + 1] = ndtr(lead / np.sqrt(var * left)) if left else (lead > 0)
-
     outcome = truth[T]
     cash += shares * outcome[:, None]  # each YES share pays 1 or 0
-    return dict(prices=prices, truth=truth, outcome=outcome,
+    return dict(prices=prices, truth=truth, outcome=outcome, news=news,
                 profit=cash - budget, mm_pnl=mm_cash - x * outcome)
 
 
@@ -64,10 +104,13 @@ if __name__ == "__main__":
     N, b = 51, 50.0  # bot 0 is the oracle, bots 1..50 are punters
 
     def orders(oracle):
-        def fn(t, price_hist, true_p, shares, rng):
+        def fn(t, price_hist, truth, shares, rng):
             d = rng.standard_normal(shares.shape)  # punters: random buys/sells, ~1 share
-            d[:, 0] = 200 * (true_p - price_hist[-1]) if oracle else 0  # oracle trades toward the truth
-            return d
+            a, e = np.zeros(shares.shape), np.zeros(shares.shape)
+            d[:, 0] = 0
+            if oracle:  # oracle holds 200 shares per unit of log-odds the price is below the truth
+                d[:, 0], a[:, 0], e[:, 0] = -shares[:, 0], 200, lo(truth[t])
+            return d, a, e
         return fn
 
     r = simulate(orders(True), N, b=b)
@@ -76,17 +119,33 @@ if __name__ == "__main__":
     err0 = np.abs(r0["prices"] - r0["truth"]).mean()
 
     # Is the true probability honest? Bin it mid-market and compare with how often the event happened.
-    c = simulate(lambda t, ph, tp, sh, rng: np.zeros(sh.shape), 1, n_markets=20000, seed=1)
+    c = simulate(lambda t, ph, tp, sh, rng: (np.zeros(sh.shape),) * 3, 1, n_markets=20000, seed=1)
     mid, out = c["truth"][100], c["outcome"]
     bins = np.minimum((mid * 10).astype(int), 9)
     calib = max(abs(out[bins == k].mean() - mid[bins == k].mean()) for k in range(10))
 
+    # Collateral: no bot may lose more than its budget, however recklessly it trades and whatever
+    # the fee. 20 bots jump to random positions of up to +-100 shares each tick, 10 place random
+    # limit orders, the rest are large punters.
+    def flippers(t, price_hist, truth, shares, rng):
+        M = len(shares)
+        d, a, e = 20 * rng.standard_normal(shares.shape), np.zeros(shares.shape), np.zeros(shares.shape)
+        d[:, :20] = rng.uniform(-100, 100, (M, 20)) - shares[:, :20]
+        a[:, 20:30], e[:, 20:30] = rng.uniform(0, 300, (M, 10)), rng.normal(0, 3, (M, 10))
+        return d, a, e
+    worst = min(simulate(flippers, 50, n_markets=400, fee=fee, seed=s)["profit"].min()
+                for fee in [0, 0.01, 0.05] for s in range(2))
+
+    print(f"worst loss, reckless bots: {worst:7.2f}   (budget 100)")
     print(f"oracle profit / market:   {r['profit'][:, 0].mean():7.2f}")
     print(f"punter profit / market:   {r['profit'][:, 1:].mean():7.2f}")
     print(f"LMSR pnl / market:        {r['mm_pnl'].mean():7.2f}   (worst {r['mm_pnl'].min():.2f}, cap {-b * np.log(2):.2f})")
     print(f"price vs truth gap:       {err:.3f} with oracle, {err0:.3f} punters only")
     print(f"truth calibration error:  {calib:.3f} (worst of 10 bins, 20k markets)")
 
+    # Tolerance 0.01: the clearing-price search is exact to ~4e-5 log-odds, which can leave a
+    # bot ~0.0003 past its budget (measured), i.e. 0.03 cents on 100.
+    assert np.isfinite(worst) and worst >= -100 - 0.01, "a bot lost more than its budget (positions not fully collateralised)"
     assert np.allclose(r["profit"].sum(1) + r["mm_pnl"], 0), "money not conserved"
     assert r["mm_pnl"].min() >= -b * np.log(2) - 1e-9, "LMSR lost more than its cap"
     assert r["profit"][:, 0].mean() > 0 > r["profit"][:, 1:].mean(), "oracle should win, punters lose"
