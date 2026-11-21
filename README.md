@@ -1,8 +1,8 @@
 # Prediction Arena
 
 A population of trading bots competing on simulated prediction markets. Bots trade, go bust and
-reproduce; reinforcement-learning and Bayesian agents are dropped in to see whether they can keep
-an edge against a population that evolves to exploit them.
+reproduce; Bayesian and reinforcement-learning agents are dropped in to see whether they can keep
+an edge against a population that evolves around them.
 
 ## The market (`market.py`)
 
@@ -10,20 +10,28 @@ an edge against a population that evolves to exploit them.
   jumps, and the event happens if the lead is positive at the end. The true probability is the
   chance the lead holds given the time left: `p = Phi(lead / sqrt(var * ticks_left))`, so it drifts
   toward 0 or 1 as the market nears resolution.
-- **Market maker.** An LMSR (logarithmic market scoring rule) market maker fills the net order of
+- **Market maker.** An LMSR (logarithmic market scoring rule) market maker takes the net order of
   all bots each tick. Its worst-case loss per market is capped at `b * ln 2`.
-- **Batch auction with limit orders.** Each tick, all orders clear at one price. Price-sensitive bots
-  say how many shares they'd hold at any price, and the clearing price is solved exactly.
-  Without this, bots reacting to the old price all piled in together and the price swung between
-  ~0 and ~1 every tick.
+- **Uniform-price batch auction with limit orders.** Each tick, all orders clear at one price and
+  everyone trades at that price. Price-sensitive bots say how many shares they'd hold at any price,
+  and the clearing price is solved exactly. Without batching, bots reacting to the old price all
+  piled in together and the price swung between ~0 and ~1 every tick.
 - **Full collateral, as on real prediction markets.** A long position must be paid for in cash and a
   short must keep $1 per share in cash, fees included, so no bot can ever lose more than its budget.
-  An early version without this let bots run up debt (one lost 240 on a budget of 100), and that fake
-  money distorted the evolution results. A built-in check now has reckless bots trade at random at
-  fees of 0, 1c and 5c and confirms nobody loses more than they had.
-- **Speed.** All vectorised in numpy. The clearing price takes 4-6 evaluations of everyone's orders
-  per tick (a guarded Newton/secant search that gives the same answer as 20 rounds of bisection),
-  so one generation (400 markets x 200 ticks, 150 bots) takes ~1-4 s on a laptop.
+  An early version without this let bots run up debt (one lost 240 on a budget of 100). A built-in
+  check has reckless bots trade at random at fees of 0, 1c and 5c and confirms nobody loses more
+  than they had.
+- **Speed.** All vectorised in numpy. The clearing price takes ~5-7 evaluations of everyone's orders
+  per tick (a guarded Newton/secant search that gives the same answer as 30 rounds of bisection),
+  so one generation (400 markets x 200 ticks, 150 bots) takes ~1.5-4 s on a laptop.
+
+**A loophole found by the RL agent.** Earlier versions filled everyone at the market maker's
+*average* price over the batch, while bots chose their orders at the *clearing* price. Whoever
+traded with the net flow got a better price than they'd planned for, so a big trader could push the
+clearing price past the truth and buy cheaply from the bots selling into it. The PPO agent (Phase 4)
+found this within 2 training iterations and earned 17x a forecaster while prices barely moved. The
+market now uses a single uniform price, as frequent batch auctions do, and every result below was
+re-run on the fixed market. The fix changed the evolved ecology (Phase 2).
 
 ## Phase 1: does the market work?
 
@@ -33,10 +41,10 @@ pull the price to it, the market would be broken. It isn't used after Phase 1.
 
 | | per market |
 |---|---|
-| Oracle profit | +26.0 |
-| Punter profit | -0.2 each |
-| Market maker P&L | -14.9 (worst -34.5, cap -34.7) |
-| Price-to-truth gap | 0.115 with oracle vs 0.317 punters only |
+| Oracle profit | +14.0 |
+| Punter profit | -0.4 each |
+| Market maker P&L | +5.0 (worst -28.4, cap -34.7) |
+| Price-to-truth gap | 0.116 with oracle vs 0.317 punters only |
 | Calibration of the true probability | worst bin off by 1.7% (20k markets) |
 
 ![Phase 1: price vs true probability](phase1.png)
@@ -66,35 +74,31 @@ Things that had to be fixed before the results meant anything (each mirrors a re
 5. **Independent errors made the market unrealistically perfect.** 50 forecasters with independent
    errors average them out almost completely; real traders' errors are correlated.
 6. **Bots could lose money they didn't have** (no collateral; see above).
+7. **Average-price fills were a free option** for whoever traded with the crowd (see above).
 
-### Result: the same rules evolve into two different ecologies
+### Result: boom and bust around a small core of forecasters
 
-**Seeds 0 and 2: a stable, accurate market.**
+All three seeds end up in the same kind of ecology (averages over generations 500-999):
 
 ![Phase 2, seed 0](phase2.png)
 
-- Forecasters ~50%, contrarians ~44%, momentum ~6-7% (averages over generations 500-999).
-- Contrarians have evolved to trade almost nothing (size ~1.3) and earn ~0; they survive because
-  selection only removes the 20 worst bots, and a bot earning zero is never among them.
-- Forecasters settle on an accuracy of sigma = 0.35 and are the only reliable earners (+0.3 per market).
-- The price stays within 0.040 of the truth on average (perfect bots: 0.020), with no sustained
-  bubbles (worst single generation: 0.14 in seed 2, 0.08 in seed 0).
+- **Forecasters are ~23-24% of the population**, at size ~90 (near the cap) and accuracy
+  sigma = 0.30-0.31. They're the only bots that make money: +0.89, +1.03 and +0.02 per market after
+  paying for accuracy (seed 2 has rare crash generations, the worst at -12.4 per market).
+- **The other ~76% are trend followers that have evolved to almost stop trading** (size 0.1-1.5) and
+  earn about 0. (Their "momentum" or "contrarian" label in the charts is just the sign of a
+  near-zero size.) They survive because selection removes the 20 worst bots each generation: a bot
+  earning exactly zero is never among them, while forecasters' profits are noisy enough that the
+  unlucky ones often are. Truncation selection punishes risk.
+- **Boom and bust.** The fewer forecasters there are, the more each one earns (correlation -0.35 to
+  -0.57 between their share and their profit). When they get scarce the price drifts from the truth
+  (the gap spikes to 0.19-0.42 in the worst generations), the survivors make big profits (up to +34
+  per market in one generation), and they multiply again.
+- Punters lose ~0.4 per market.
 
-**Seed 1: a momentum herd takes over and the market becomes unstable.**
-
-![Phase 2, seed 1](phase2_seed1.png)
-
-- By generation 50, momentum bots are ~50% of the population (in the other seeds, contrarians took
-  that niche). For ~475 generations they stay small (size ~10) and the market is calm.
-- Between generations 450 and 500 their size runs away from 12 to the cap of 100, and from
-  generation 477 the market flips between calm periods and bubbles where the price sits ~0.35 from
-  the truth.
-- Momentum bots lose money on average (-5.3 per market) while forecasters earn +5.6, yet the herd
-  persists: the typical momentum bot profits, and its mutated copies with a different lookback trade
-  out of step and absorb the losses. (Checked on a comparable evolved population, not yet on this
-  exact run.)
-- A bubble needs a momentum herd that is both numerous and large: in seeds 0 and 2 momentum bots are
-  just as big (size ~40-50) but only 6-7% of the population, and the market never destabilises.
+Before the loophole was fixed, one seed grew a momentum herd that caused bubbles. That was the
+loophole at work: trading with the crowd was subsidised. With a uniform price, market orders pay
+their full price impact, trend-following doesn't pay, and no seed forms a herd.
 
 ## Phase 3: measuring the market (`measure.py`)
 
@@ -106,88 +110,155 @@ directly, and with a "perfect bots" benchmark on the same markets. Each measure 
 
 Averages over generations 500-999:
 
-| | perfect bots | seed 0 | seed 2 | seed 1 (herd) |
+| | perfect bots | seed 0 | seed 1 | seed 2 |
 |---|---|---|---|---|
-| price-to-truth gap | 0.020 | 0.041 | 0.040 | 0.146 |
-| calibration error | 0.000 | 0.009 | 0.009 | 0.118 |
-| share of news priced in after 1 tick | 1.00 | 0.98 | 0.98 | 0.78 |
-| favourite-longshot slope (1 = unbiased) | 1.01 | 1.01 | 1.01 | 0.70 |
-| predictability (lag-1 autocorr of returns) | 0.04 | 0.06 | 0.07 | 0.32 |
+| price-to-truth gap | 0.020 | 0.045 | 0.046 | 0.044 |
+| calibration error | 0.000 | 0.011 | 0.011 | 0.010 |
+| share of news priced in after 1 tick | 1.00 | 0.96 | 0.96 | 0.96 |
+| favourite-longshot slope (1 = unbiased) | 1.01 | 1.02 | 1.02 | 1.02 |
+| predictability (lag-1 autocorr of returns) | 0.04 | 0.05 | 0.03 | 0.05 |
 
-In the herd market, prices are too extreme (slope 0.70: longshots underpriced) and strongly
-trending, which is exactly the footprint of a momentum crowd.
+The evolved market is about twice as far from the truth as perfect bots, but well calibrated and
+unbiased.
 
-**What didn't emerge:** in the stable seeds, fat tails and volatility clustering match the
-perfect-bot benchmark, so they come from the news jumps built into the truth, not from the bots.
-There's no favourite-longshot bias either: punters here trade at random, while real punters overbet
-longshots, and adding that preference is the obvious next experiment.
+**What didn't emerge:** fat tails and volatility clustering match the perfect-bot benchmark, so they
+come from the news jumps built into the truth, not from the bots. There's no favourite-longshot bias
+either: punters here trade at random, while real punters overbet longshots, and adding that
+preference is the obvious next experiment.
 
-### Fees: a 1c fee makes prices 2.4x less accurate
+### Fees: even 0.2c makes prices noticeably worse
 
 Same setup with a fee per share traded, seeds 0 and 2, 300 generations each, averages over
-generations 150-299, averaged over the two seeds (they tell the same story):
+generations 150-299 and over the two seeds (they tell the same story):
 
 | | no fee | 0.2c fee | 1c fee |
 |---|---|---|---|
-| price-to-truth gap | 0.041 | 0.043 | 0.098 |
-| calibration error | 0.009 | 0.010 | 0.046 |
-| share of news priced in after 1 tick | 0.98 | 0.98 | 0.89 |
-| forecaster size / error sigma | 92 / 0.34 | 90 / 0.35 | 2-3 / ~1.0 |
-| trend bots (share, typical size) | ~51%, active | ~65%, size ~0.02 | ~1% |
-| punter loss per market (mostly fees) | 0.06 | 1.67 | 8.0 |
+| price-to-truth gap | 0.044 | 0.074 | 0.093 |
+| calibration error | 0.009 | 0.032 | 0.040 |
+| share of news priced in after 1 tick | 0.97 | 0.90 | 0.89 |
+| forecasters (share, size, error sigma) | 23%, ~88, 0.32 | 20%, 61-83, 0.33 | 98%, 2-3, 1.0 |
+| forecaster profit per market (after info cost) | +0.53 | +2.4 | ~0 |
+| punter loss per market (mostly fees at 1c) | 0.40 | 2.6 | 8.8 |
 
-- **0.2c:** forecasters barely notice, but trend-following stops paying: trend bots survive only by
-  shrinking to almost nothing. Accuracy is almost unchanged.
+- **0.2c:** fewer or smaller forecasters, each earning more (less competition), and prices 70% less
+  accurate.
 - **1c:** a forecaster's edge per share is smaller than the fee, so evolution shrinks forecasters to
-  size 2-3 and lets them stop paying for accuracy (sigma ~1). Nobody corrects mispricings, so the
-  gap more than doubles, with spikes up to 0.25. The punters' losses now go to the exchange, not to
-  traders.
+  size 2-3 and lets them stop paying for accuracy. Nobody corrects mispricings, so the gap doubles,
+  and the punters' losses go to the exchange, not to traders.
 
-![1c fee, seed 0](phase2_fee0.01.png)
+![1c fee, seed 0](phase2_fee0.01_g300.png)
 
 ## Phase 4: learning agents
+
+Every agent below is dropped into the final evolved population of each seed (generation 999) and
+compared with an identical forecaster on the same 2000 markets.
+
+**Measuring profit.** Each market resolves to 0 or 1, and a 90-share position turns that coin flip
+into about +-12 of luck per market, which buried every difference. Because the simulator knows the
+true probability at every tick, each trade is valued at the truth when it was made instead. That
+gives the same average with ~10x smaller error bars (the bookkeeping is checked against real profit
+in every run).
 
 ### A Bayesian trader (`kalman.py`)
 
 The Kalman trader gets exactly what a forecaster gets: its own estimate of the true probability
-(with an error fixed for the market, half of it shared with everyone) and the market price. A
-forecaster trusts its estimate. The Kalman trader also learns its own error: every tick it compares
-its last estimate with the price that cleared on it, and a Kalman filter turns those comparisons
-into a best guess of its error. One setting, tau, says how noisy it thinks the price is: tau = inf
-is a plain forecaster, small tau trusts the price.
-
-**Test:** one Kalman trader, with the median forecaster's accuracy and size, is dropped into each
-evolved population (seeds 0 and 2 after 300 generations, seed 1's momentum herd after 600) and
-compared with an identical forecaster on the same 2000 markets.
-
-**Measuring it:** each market resolves to 0 or 1, and a 90-share position turns that coin flip
-into about +-12 of luck per market, which buried every difference. Because the simulator knows the true
-probability at every tick, each trade is valued at the truth when it was made instead. That gives
-the same average with 12x smaller error bars (the bookkeeping is checked against real profit).
+(with an error fixed for the market, half of it shared with everyone) and the market price. It also
+learns its own error: every tick it compares its last estimate with the price that cleared on it,
+and a Kalman filter turns those comparisons into a best guess of its error. One setting, tau, says
+how noisy it thinks the price is: tau = inf is a plain forecaster, small tau trusts the price.
 
 ![Kalman trader vs forecaster](phase4_kalman.png)
 
-| | stable markets (seeds 0, 2) | momentum herd (seed 1) |
+| per market (seeds 0, 1, 2) | forecaster | Kalman (tau 0.1-0.3) |
 |---|---|---|
-| forecaster profit per market | +0.61, +0.74 | +0.42 |
-| Kalman (tau 0.1-0.3) profit per market | +0.49, +0.62 (17-19% less) | +0.22 (47% less) |
-| risk (s.d. of profit per market) | 11.7, 11.9 -> 2.2, 2.8 | 18.8 -> 3.7 |
-| profit per unit of risk | 3.5-4.3x higher | 2.7x higher |
+| expected profit | +0.51, +0.52, +0.49 | +0.24 to +0.26 (about half) |
+| risk (s.d. of profit) | 11.7, 8.9, 7.9 | 4.0, 3.4, 3.0 |
+| profit per unit of risk | 0.044, 0.058, 0.063 | 0.064, 0.075, 0.087 (1.3-1.5x) |
 
-- **It does learn its error.** Its estimate ends up 29% closer to the truth, and what it learns is
-  exactly the private half of its error (correlation 0.70 = sqrt(0.5)); the shared half can't be
+- **It does learn its error.** Its estimate ends up 25% closer to the truth (seed 0), and what it learns is
+  the private half of its error (correlation 0.68, close to sqrt(0.5)); the shared half can't be
   learned from the price, because the price carries the same mistake.
-- **It earns less**, mostly in the first 10 ticks (-0.05 vs +0.10 per market, seed 0, tau = 0.3).
-  The filter treats each price comparison as independent, but the price's errors persist from tick
-  to tick, so it becomes confident too early and trades on a bad guess.
-- **After that it nearly matches the forecaster** (+0.51 vs +0.53) while holding a sixth of the
-  position (3 vs 18.5 shares on average): the forecaster's extra position is a bet on its own noise,
-  which adds risk but almost no profit.
-- **Trusting the price hurts most in the herd market**, where the price is pushed around by
-  momentum bots rather than information.
+- **But it learns some of the market's mistakes as its own.** Punters' accumulated positions push
+  the price away from the truth, and a forecaster profits by leaning against that. The Kalman trader
+  can't tell that distortion from its own error: the mistake in its learned error correlates -0.36
+  with the punters' net position (its true error: -0.05). So it "corrects" itself into agreement
+  with the distorted price, holds a third of the position, and earns half as much, mostly late in
+  the market when the distortion has built up.
 
-Evolution here selects on total profit, so in this ecology the plain forecaster would win. A
-fitness that charges for risk, as real trading firms do, would favour the Bayesian trader.
+### Visible wallets (`wallets.py`)
+
+On Polymarket every position is public under a pseudonymous wallet. The simulator works the same
+way: every bot can see every wallet's position after the last tick, and a public leaderboard of past
+profit, but never a wallet's strategy. Does that ledger hold exploitable information? A wallet
+watcher copies (or fades) the average position of the top (or bottom) wallets on a leaderboard
+built from 2000 earlier markets:
+
+| watcher (2000 test markets, seeds 0, 1, 2) | expected profit per market | risk |
+|---|---|---|
+| copy the top wallet by **profit** (always a lucky punter) | -0.46, -0.50, -0.53 | 24 |
+| copy the top wallet by **profit per unit of risk** (a forecaster) | +0.81, +0.76, +0.39 | 5-11 |
+| copy the top 10 by profit per unit of risk (all forecasters) | +0.63, +0.53, +0.58 | 5-7 |
+| fade the bottom 10 by profit (mostly punters) | +0.28, +0.30, +0.38 | 7-8 |
+
+- **Copying luck loses.** Punters hold big random positions, so over 2000 markets the luckiest one
+  out-earns every forecaster, and copying it loses money. Ranking by profit per unit of risk finds
+  the skilled wallets.
+- **Copiers free-ride.** A watcher with no information of its own, a tick behind, earns as much as a
+  forecaster (often more) without paying for accuracy: transparency lets copiers live off informed
+  traders.
+- **Fading the punters pays**: their accumulated positions keep the price slightly off.
+
+### A reinforcement-learning trader (`ppo.py`)
+
+- **Same information** as the forecaster and Kalman trader: its private estimate, the price, its own
+  position, and the public ledger (positions and last trades of the top and bottom 10 wallets).
+- **Its actions** each tick: a shift to its valuation and a multiplier on its size (capped at 100,
+  like every bot). With both at 0 it is exactly a forecaster, and training starts there.
+- **Reward:** each trade valued at the true probability when it was made (the network never sees
+  the truth). PPO as in CleanRL; each iteration is 400 markets against the evolved population;
+  150 iterations (~10 min on a laptop CPU).
+- **Checks:** with its last layer zeroed it reproduces the forecaster's profit exactly; the first PPO
+  update checks that the recorded actions and log-probabilities line up.
+
+![PPO training](phase4_ppo.png)
+
+| per market (seeds 0, 1, 2) | expected profit | risk | profit per unit of risk |
+|---|---|---|---|
+| forecaster (size ~90) | +0.51, +0.52, +0.49 | 7.9-11.7 | 0.044-0.063 |
+| best plain forecaster with no size cap (size ~400) | +0.99, +1.33, +1.43 | 33-34 | ~0.03-0.04 |
+| PPO | **+1.92, +1.90, +2.12** | 17.7-23.7 | **0.081-0.120** |
+
+- **PPO earns ~4x the forecaster**, and still more than any plain forecaster with the size cap
+  removed, at lower risk than that one. Trading bigger explains a third to 60% of its edge.
+- **What it learned** (its actions regressed on its inputs): it raises its valuation when it already
+  holds a position (which lets it trade bigger than the cap), subtracts its average past
+  disagreement with the price (a Kalman-style correction), leans toward what the top wallets hold,
+  and trades bigger late in the market.
+- Training was still improving at 150 iterations.
+
+### Edge decay: does the population adapt to the agent? (`decay.py`)
+
+The trained agent joins its evolving population (it never reproduces or dies) for 200 more
+generations; the population evolves on profit as usual, so whatever the agent takes becomes
+selection pressure. Three versions: a plain forecaster (control), the agent frozen, and the agent
+still learning (one PPO update per generation).
+
+![Edge decay](phase4_decay.png)
+
+| expected profit per market, first -> last 25 generations | forecaster | PPO frozen | PPO learning |
+|---|---|---|---|
+| seed 0 | +1.16 -> +1.03 | +2.70 -> +2.76 | +2.39 -> +2.17 |
+| seed 1 | +0.99 -> +0.98 | +3.03 -> +2.22 | +2.37 -> +2.81 |
+| seed 2 | +0.76 -> +0.65 | +2.09 -> +2.02 | +1.94 -> +2.03 |
+
+- **The edge doesn't decay.** The frozen agent keeps earning 2-3x the forecaster for 200
+  generations, so continued learning has nothing to fix.
+- **The population barely notices it.** Forecaster share and market accuracy are the same with or
+  without the agent. No evolving species can single out one wallet, so the agent's cut never becomes
+  something selection can target; all three traders simply rise and fall with the forecasters'
+  boom-and-bust cycle.
+- That's the motivation for the next experiment: an evolving "wallet watcher" species that can copy
+  or fade specific wallets, giving the population a way to hunt the agent.
 
 ## Run it
 
@@ -196,9 +267,12 @@ python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt   # macOS/Linux: .venv/bin/pip
 .venv/Scripts/python market.py      # Phase 1 checks + chart
 .venv/Scripts/python measure.py     # Phase 3 measure checks
-.venv/Scripts/python evolve.py      # Phase 2+3, 1000 generations (~20-40 min); --gens, --seed, --fee
-.venv/Scripts/python evolve.py --gens 300            # populations for Phase 4 (seed 1: --seed 1 --gens 600)
-.venv/Scripts/python kalman.py      # Phase 4 Kalman checks + experiment (~10 min)
+.venv/Scripts/python evolve.py      # Phase 2+3, 1000 generations (~30-40 min); --seed, --fee, --gens
+                                    # also saves the final population (pop*.npz) for Phase 4
+.venv/Scripts/python kalman.py      # Kalman checks + experiment (~10 min)
+.venv/Scripts/python wallets.py     # wallet checks + watcher experiment (~20 min)
+.venv/Scripts/python ppo.py train pop.npz   # PPO checks + training (~10 min); then `ppo.py report`
+.venv/Scripts/python decay.py run pop.npz   # edge decay (~30 min); then `decay.py report`
 ```
 
 ## Roadmap
@@ -206,7 +280,7 @@ python -m venv .venv
 1. ~~Market core~~
 2. ~~Evolving bot population~~
 3. ~~Measurement~~
-4. Learning agents: ~~Kalman-filter Bayesian trader~~; next, visible "on-chain" wallets, a PPO agent
-   with the same private information as a forecaster, and the edge-decay experiment
+4. ~~Learning agents: Kalman trader, visible wallets, PPO agent, edge decay~~; next, an evolving
+   wallet-watcher species that can target the agent
 5. Stress test: plug in your own bot and see how fast an adaptive population erodes its edge
 6. Animated arena

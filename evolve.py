@@ -29,7 +29,7 @@ SWITCH_PROB = 0.05  # chance a child switches between trend follower and forecas
 ERR_CORR = 0.5      # share of forecaster error variance that's common to everyone in a market
                     # (same data, same models); with 0, 50 independent errors average out and
                     # the market is unrealistically close to perfect
-FEE = 0.0          # per share traded; a 1c fee (`python evolve.py 0.01`) left forecasters ~zero profit
+FEE = 0.0           # per share traded; a 1c fee (`python evolve.py --fee 0.01`) left forecasters ~zero profit
 ALPHA_MAX = 100     # size cap; uncapped, forecaster size drifted from 13 to ~1000 and switched
                     # giants turned into momentum bots that caused fake bubbles
 
@@ -90,6 +90,37 @@ def next_generation(pop, fitness, rng):
     flip = dead[rng.random(N_DIE) < SWITCH_PROB]
     pop["kind"][flip] = 1 - pop["kind"][flip]
     return pop
+
+
+def drop_in(pop, make_agent, n_markets, seed, sigma=None, size=None):
+    """Run an evolved population with one extra trader in the last column, and score it.
+
+    make_agent(base_fn, err, sigma, size) returns the full order function. err (M, 1) is an
+    estimate error like a forecaster's (shared part in common with the population), for the median
+    forecaster's accuracy sigma; size is the median forecaster's size (either can be fixed by
+    passing it). Agents that need neither ignore them. Returns the trader's expected profit per
+    market and the simulation (with r["trades"], its trades per tick): each trade is
+    valued at the true probability when it was made instead of at the final 0/1 outcome, which has
+    the same average but removes the luck of how each market resolved (most of the noise).
+    """
+    fc = pop["kind"] == FORECAST
+    sigma = np.median(pop["sigma"][fc]) if sigma is None else sigma
+    size = np.median(np.abs(pop["alpha"][fc])) if size is None else size
+    rng = np.random.default_rng(seed)
+    z = np.sqrt(ERR_CORR) * rng.standard_normal((n_markets, 1)) \
+        + np.sqrt(1 - ERR_CORR) * rng.standard_normal((n_markets, N_EVO + 1))
+    fn = make_agent(make_orders(pop, z[:, :N_EVO] * pop["sigma"]), z[:, N_EVO:] * sigma, sigma, size)
+    pos = []
+
+    def recorded(t, price_hist, truth, shares, rng):
+        pos.append(shares[:, -1].copy())  # its position before this tick's trade
+        return fn(t, price_hist, truth, shares, rng)
+    r = simulate(recorded, N_EVO + N_PUNT + 1, n_markets=n_markets, seed=seed)
+    trades = np.diff(np.vstack(pos + [r["shares"][:, -1]]), axis=0)  # (T, M)
+    # Bookkeeping check (no fees here): valuing trades at the outcome gives the real profit.
+    assert np.allclose((trades * (r["outcome"] - r["fills"])).sum(0), r["profit"][:, -1])
+    r["trades"] = trades
+    return (trades * (r["truth"][:-1] - r["fills"])).sum(0), r
 
 
 def evolve(generations=300, seed=0, fee=FEE, progress=False):

@@ -19,7 +19,7 @@ pop*.npz files written by evolve.py).
 """
 import numpy as np
 
-from evolve import ERR_CORR, FORECAST, N_EVO, N_PUNT, make_orders
+from evolve import drop_in
 from market import lo, simulate
 
 
@@ -54,28 +54,8 @@ def with_kalman(base_fn, err, size, sigma, tau):
 
 def trial(pop, tau, n_markets, seed):
     """One Kalman trader with the median forecaster's accuracy and size, dropped into pop.
-
-    Errors follow evolve.py: a part shared by every forecaster in the market plus its own part.
-    Returns the trader's expected profit per market and the simulation. Expected profit values
-    each trade at the true probability when it was made instead of at the final 0/1 outcome:
-    same average, but without the luck of how each market resolved (most of the noise).
-    """
-    fc = pop["kind"] == FORECAST
-    sigma, size = np.median(pop["sigma"][fc]), np.median(np.abs(pop["alpha"][fc]))
-    rng = np.random.default_rng(seed)
-    z = np.sqrt(ERR_CORR) * rng.standard_normal((n_markets, 1)) \
-        + np.sqrt(1 - ERR_CORR) * rng.standard_normal((n_markets, N_EVO + 1))
-    fn = with_kalman(make_orders(pop, z[:, :N_EVO] * pop["sigma"]), z[:, N_EVO:] * sigma, size, sigma, tau)
-    pos = []
-
-    def recorded(t, price_hist, truth, shares, rng):
-        pos.append(shares[:, -1].copy())  # its position before this tick's trade
-        return fn(t, price_hist, truth, shares, rng)
-    r = simulate(recorded, N_EVO + N_PUNT + 1, n_markets=n_markets, seed=seed)
-    trades = np.diff(np.vstack(pos + [r["shares"][:, -1]]), axis=0)  # (T, M)
-    # Bookkeeping check (no fees here): valuing trades at the outcome gives the real profit.
-    assert np.allclose((trades * (r["outcome"] - r["fills"])).sum(0), r["profit"][:, -1])
-    return (trades * (r["truth"][:-1] - r["fills"])).sum(0), r
+    Returns its expected profit per market and the simulation (see evolve.drop_in)."""
+    return drop_in(pop, lambda base, err, sigma, size: with_kalman(base, err, size, sigma, tau), n_markets, seed)
 
 
 if __name__ == "__main__":
@@ -110,7 +90,7 @@ if __name__ == "__main__":
 
     # Experiment: one Kalman trader in each evolved population, for a range of tau. Same seed =
     # same markets, punters and errors for every tau, so differences are paired.
-    pops = {f: dict(np.load(f)) for f in sorted(glob.glob("pop*.npz"))}
+    pops = {f: dict(np.load(f)) for f in sorted(glob.glob("pop*.npz")) if "fee" not in f}  # no-fee populations
     assert pops, "run evolve.py first (it saves the final population)"
     taus = [0.1, 0.3, 1.0, 3.0, 10.0]
     M = 2000

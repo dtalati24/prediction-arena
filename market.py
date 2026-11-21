@@ -9,7 +9,7 @@ Run `python market.py` for the Phase 1 check and chart.
 import numpy as np
 from scipy.special import expit, logit, ndtr
 
-GRID = 40 / 2**20  # clearing-price precision in log-odds (20 halvings of [-20, 20])
+GRID = 40 / 2**30  # clearing-price precision in log-odds (30 halvings of [-20, 20])
 
 
 def lo(p):
@@ -48,7 +48,7 @@ def simulate(order_fn, n_bots, n_markets=100, T=200, b=50.0, sigma=1.0,
     mm_cash = np.zeros(M)
     prices = np.empty((T + 1, M))
     prices[0] = 0.5
-    fills = np.empty((T, M))  # average price each tick's batch traded at
+    fills = np.empty((T, M))  # the price each tick's batch traded at
 
     for t in range(T):
         d, a, e = order_fn(t, prices[:t + 1], truth, shares, rng)
@@ -58,12 +58,11 @@ def simulate(order_fn, n_bots, n_markets=100, T=200, b=50.0, sigma=1.0,
 
             Full collateral, as on real prediction markets: a long must be paid for in cash, and a
             short (YES sold) must keep $1 per share in cash, so no bot can lose more than its budget.
-            The fill price lies between the start price and the clearing price, so buyers are
-            judged at the higher of the two plus the fee, and sellers at the lower minus the fee.
+            Everyone trades at the clearing price, so that's what buyers pay and sellers receive
+            (plus or minus the fee).
             """
             pc = expit(L)[:, None]
-            buy = np.maximum(prices[t][:, None], pc) + fee         # most a buyer can pay per share
-            sell = np.minimum(prices[t][:, None], pc) - fee        # least a seller can receive
+            buy, sell = pc + fee, pc - fee
             hi = np.minimum(limit, shares + cash / buy)
             lo_ = np.maximum(-limit, -(cash + shares * sell) / (1 - sell))
             # If a bot is ever short of collateral (rounding), it may be forced to close its
@@ -74,19 +73,21 @@ def simulate(order_fn, n_bots, n_markets=100, T=200, b=50.0, sigma=1.0,
 
         # Clearing price: LMSR log-odds after the trade is (x + net order) / b, and orders are
         # judged at that same price. Net order falls as L rises, so solve b*L = x + net order(L).
-        # The answer is the middle of the step, on a grid of 2^20 steps over [-20, 20], that holds
-        # the root: exactly what 20 rounds of bisection give. Guesses only pick which grid point to
+        # The answer is the middle of the step, on a grid of 2^30 steps over [-20, 20], that holds
+        # the root: exactly what 30 rounds of bisection give. (At 2^20 the clearing price and the
+        # LMSR's price afterwards differed by ~0.001 log-odds, worth ~0.03 per market to a
+        # forecaster.) Guesses only pick which grid point to
         # test, so they change the speed, never the answer. Each guess is a Newton step (slope =
         # b + total size of the bots not at a limit), or, if that lands outside the bracket or the
         # last step didn't halve it, false position with the Illinois fix (Newton alone stalled
         # when many bots hit their limits).
-        # ~4-6 evaluations instead of 21; after 12 tries, plain bisection takes over as a fallback.
-        k_lo, k_hi = np.zeros(M, np.int64), np.full(M, 2**20)
+        # ~5-7 evaluations instead of 31; after 12 tries, plain bisection takes over as a fallback.
+        k_lo, k_hi = np.zeros(M, np.int64), np.full(M, 2**30)
         f_lo, f_hi = np.full(M, np.nan), np.full(M, np.nan)  # net - b*L at the bracket ends, once tested
         last = np.zeros(M)                                   # which end moved last: +1 low, -1 high
         width, halved = k_hi - k_lo, np.ones(M, bool)        # did the last step halve the bracket?
         L = x / b
-        for i in range(40):
+        for i in range(50):
             open_ = k_hi - k_lo > 1
             if not open_.any():
                 break
@@ -110,18 +111,23 @@ def simulate(order_fn, n_bots, n_markets=100, T=200, b=50.0, sigma=1.0,
             width = k_hi - k_lo
             L = Lk + f / (b + (a * free).sum(1))
         assert (k_hi - k_lo == 1).all()
-        d = orders(((-20 + k_lo * GRID) + (-20 + k_hi * GRID)) / 2)[0]
+        L = ((-20 + k_lo * GRID) + (-20 + k_hi * GRID)) / 2
+        d = orders(L)[0]
 
-        # Batch auction: LMSR fills the net order, everyone pays the same average price.
+        # Uniform-price batch auction (as in frequent batch auctions): every order in the batch
+        # trades at the one clearing price, the price its limit was judged at. The LMSR takes the
+        # net order at that price. (An earlier version filled everyone at the LMSR's average price
+        # over the batch, which is better than the clearing price for whoever trades with the net
+        # flow: a large trader could push the clearing price past the truth and buy cheaply from
+        # bots selling into it. The RL agent found that within 2 training iterations.)
         D = d.sum(1)
-        cost = b * (np.logaddexp(0, (x + D) / b) - np.logaddexp(0, x / b))
-        fill = fills[t] = np.where(D != 0, cost / np.where(D != 0, D, 1), prices[t])
+        fill = fills[t] = expit(L)
         # Fee per share traded goes to the exchange; like real exchanges, it never exceeds the
         # contract's price (or 1 - price), so selling never costs more than it brings in.
         fee_ps = np.minimum(fee, np.minimum(fill, 1 - fill))[:, None]
         cash -= d * fill[:, None] + fee_ps * np.abs(d)
         shares += d
-        mm_cash += cost
+        mm_cash += D * fill
         x += D
         prices[t + 1] = expit(x / b)
 
@@ -178,8 +184,8 @@ if __name__ == "__main__":
     print(f"price vs truth gap:       {err:.3f} with oracle, {err0:.3f} punters only")
     print(f"truth calibration error:  {calib:.3f} (worst of 10 bins, 20k markets)")
 
-    # Tolerance 0.01: the clearing-price search is exact to ~4e-5 log-odds, which can leave a
-    # bot ~0.0003 past its budget (measured), i.e. 0.03 cents on 100.
+    # Tolerance 0.01: the clearing price is exact to ~2e-8 log-odds; rounding could leave a bot a
+    # tiny fraction of a cent past its budget, never more.
     assert np.isfinite(worst) and worst >= -100 - 0.01, "a bot lost more than its budget (positions not fully collateralised)"
     assert np.allclose(r["profit"].sum(1) + r["mm_pnl"], 0), "money not conserved"
     assert r["mm_pnl"].min() >= -b * np.log(2) - 1e-9, "LMSR lost more than its cap"
