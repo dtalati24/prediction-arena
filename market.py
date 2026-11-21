@@ -48,6 +48,7 @@ def simulate(order_fn, n_bots, n_markets=100, T=200, b=50.0, sigma=1.0,
     mm_cash = np.zeros(M)
     prices = np.empty((T + 1, M))
     prices[0] = 0.5
+    fills = np.empty((T, M))  # average price each tick's batch traded at
 
     for t in range(T):
         d, a, e = order_fn(t, prices[:t + 1], truth, shares, rng)
@@ -114,7 +115,7 @@ def simulate(order_fn, n_bots, n_markets=100, T=200, b=50.0, sigma=1.0,
         # Batch auction: LMSR fills the net order, everyone pays the same average price.
         D = d.sum(1)
         cost = b * (np.logaddexp(0, (x + D) / b) - np.logaddexp(0, x / b))
-        fill = np.where(D != 0, cost / np.where(D != 0, D, 1), prices[t])
+        fill = fills[t] = np.where(D != 0, cost / np.where(D != 0, D, 1), prices[t])
         # Fee per share traded goes to the exchange; like real exchanges, it never exceeds the
         # contract's price (or 1 - price), so selling never costs more than it brings in.
         fee_ps = np.minimum(fee, np.minimum(fill, 1 - fill))[:, None]
@@ -126,7 +127,7 @@ def simulate(order_fn, n_bots, n_markets=100, T=200, b=50.0, sigma=1.0,
 
     outcome = truth[T]
     cash += shares * outcome[:, None]  # each YES share pays 1 or 0
-    return dict(prices=prices, truth=truth, outcome=outcome, news=news,
+    return dict(prices=prices, truth=truth, outcome=outcome, news=news, fills=fills, shares=shares,
                 profit=cash - budget, mm_pnl=mm_cash - x * outcome)
 
 

@@ -140,10 +140,12 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--gens", type=int, default=1000)
     args = ap.parse_args()
-    tag = (f"_fee{args.fee:g}" if args.fee != FEE else "") + (f"_seed{args.seed}" if args.seed else "")
+    tag = (f"_fee{args.fee:g}" if args.fee != FEE else "") + (f"_seed{args.seed}" if args.seed else "") \
+        + (f"_g{args.gens}" if args.gens != 1000 else "")
     pop, h = evolve(args.gens, seed=args.seed, fee=args.fee, progress=True)
     assert np.allclose(h["share"].sum(1), 1)
     np.savez(f"phase2{tag}.npz", **h)  # per-generation history, for analysis
+    np.savez(f"pop{tag}.npz", **pop)    # final population, for dropping new agents into
     dashboard(h, f"phase3{tag}.png")
 
     names = ["momentum", "contrarian", "forecaster"]

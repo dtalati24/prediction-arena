@@ -145,6 +145,50 @@ generations 150-299, averaged over the two seeds (they tell the same story):
 
 ![1c fee, seed 0](phase2_fee0.01.png)
 
+## Phase 4: learning agents
+
+### A Bayesian trader (`kalman.py`)
+
+The Kalman trader gets exactly what a forecaster gets: its own estimate of the true probability
+(with an error fixed for the market, half of it shared with everyone) and the market price. A
+forecaster trusts its estimate. The Kalman trader also learns its own error: every tick it compares
+its last estimate with the price that cleared on it, and a Kalman filter turns those comparisons
+into a best guess of its error. One setting, tau, says how noisy it thinks the price is: tau = inf
+is a plain forecaster, small tau trusts the price.
+
+**Test:** one Kalman trader, with the median forecaster's accuracy and size, is dropped into each
+evolved population (seeds 0 and 2 after 300 generations, seed 1's momentum herd after 600) and
+compared with an identical forecaster on the same 2000 markets.
+
+**Measuring it:** each market resolves to 0 or 1, and a 90-share position turns that coin flip
+into about +-12 of luck per market, which buried every difference. Because the simulator knows the true
+probability at every tick, each trade is valued at the truth when it was made instead. That gives
+the same average with 12x smaller error bars (the bookkeeping is checked against real profit).
+
+![Kalman trader vs forecaster](phase4_kalman.png)
+
+| | stable markets (seeds 0, 2) | momentum herd (seed 1) |
+|---|---|---|
+| forecaster profit per market | +0.61, +0.74 | +0.42 |
+| Kalman (tau 0.1-0.3) profit per market | +0.49, +0.62 (17-19% less) | +0.22 (47% less) |
+| risk (s.d. of profit per market) | 11.7, 11.9 -> 2.2, 2.8 | 18.8 -> 3.7 |
+| profit per unit of risk | 3.5-4.3x higher | 2.7x higher |
+
+- **It does learn its error.** Its estimate ends up 29% closer to the truth, and what it learns is
+  exactly the private half of its error (correlation 0.70 = sqrt(0.5)); the shared half can't be
+  learned from the price, because the price carries the same mistake.
+- **It earns less**, mostly in the first 10 ticks (-0.05 vs +0.10 per market, seed 0, tau = 0.3).
+  The filter treats each price comparison as independent, but the price's errors persist from tick
+  to tick, so it becomes confident too early and trades on a bad guess.
+- **After that it nearly matches the forecaster** (+0.51 vs +0.53) while holding a sixth of the
+  position (3 vs 18.5 shares on average): the forecaster's extra position is a bet on its own noise,
+  which adds risk but almost no profit.
+- **Trusting the price hurts most in the herd market**, where the price is pushed around by
+  momentum bots rather than information.
+
+Evolution here selects on total profit, so in this ecology the plain forecaster would win. A
+fitness that charges for risk, as real trading firms do, would favour the Bayesian trader.
+
 ## Run it
 
 ```
@@ -153,6 +197,8 @@ python -m venv .venv
 .venv/Scripts/python market.py      # Phase 1 checks + chart
 .venv/Scripts/python measure.py     # Phase 3 measure checks
 .venv/Scripts/python evolve.py      # Phase 2+3, 1000 generations (~20-40 min); --gens, --seed, --fee
+.venv/Scripts/python evolve.py --gens 300            # populations for Phase 4 (seed 1: --seed 1 --gens 600)
+.venv/Scripts/python kalman.py      # Phase 4 Kalman checks + experiment (~10 min)
 ```
 
 ## Roadmap
@@ -160,7 +206,7 @@ python -m venv .venv
 1. ~~Market core~~
 2. ~~Evolving bot population~~
 3. ~~Measurement~~
-4. Learning agents: Kalman-filter Bayesian trader and PPO agent with the same private information as
-   a forecaster, visible "on-chain" wallets, and the edge-decay experiment
+4. Learning agents: ~~Kalman-filter Bayesian trader~~; next, visible "on-chain" wallets, a PPO agent
+   with the same private information as a forecaster, and the edge-decay experiment
 5. Stress test: plug in your own bot and see how fast an adaptive population erodes its edge
 6. Animated arena
