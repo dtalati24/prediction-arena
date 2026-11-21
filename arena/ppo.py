@@ -14,8 +14,8 @@ noise, so it learns the same thing faster.
 PPO as in CleanRL (clipped objective, GAE, Adam). Each iteration runs 400 fresh markets, i.e. 400
 parallel episodes of 200 ticks, against a fixed evolved population.
 
-    python ppo.py train pop_g300.npz      # checks, then training; saves ppo_<pop>.pt and a log
-    python ppo.py report                  # evaluates every trained agent on the 2000 test markets
+    python -m arena.ppo train pop      # checks, then training on runs/pop.npz; saves runs/ppo_pop.pt
+    python -m arena.ppo report         # evaluates every trained agent on the 2000 test markets
 """
 import argparse
 import time
@@ -25,10 +25,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from evolve import drop_in
-from kalman import trial as kalman_trial
-from market import lo
-from wallets import leaderboard
+from arena import FIGURES, RUNS
+from arena.evolve import drop_in
+from arena.kalman import trial as kalman_trial
+from arena.market import lo
+from arena.wallets import leaderboard
 
 T = 200
 FEATURES = ["estimate - price", "avg past (estimate - price)", "time left", "own position",
@@ -167,14 +168,14 @@ def evaluate(agent, pop, watch, n_markets=2000, seed=7):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["train", "report"])
-    ap.add_argument("pop", nargs="?")
+    ap.add_argument("pop", nargs="?", help="population name in runs/, e.g. pop or pop_seed1")
     ap.add_argument("--iters", type=int, default=150)
     args = ap.parse_args()
     torch.set_num_threads(2)
 
     if args.mode == "train":
-        pop = dict(np.load(args.pop))
         name = args.pop.removesuffix(".npz")
+        pop = dict(np.load(RUNS / f"{name}.npz"))
         watch = watch_list(pop)
         # Check: with its last layer zeroed, the greedy agent is exactly a forecaster.
         agent = Agent()
@@ -187,25 +188,23 @@ if __name__ == "__main__":
         print("PPO checks passed", flush=True)
 
         agent, hist = train(pop, args.iters, watch, log=lambda s: print(s, flush=True))
-        torch.save(agent.state_dict(), f"ppo_{name}.pt")
-        np.savez(f"ppo_{name}_log.npz", top=watch[0], bottom=watch[1], **hist)
-        print(f"saved ppo_{name}.pt")
+        torch.save(agent.state_dict(), RUNS / f"ppo_{name}.pt")
+        np.savez(RUNS / f"ppo_{name}_log.npz", top=watch[0], bottom=watch[1], **hist)
+        print(f"saved runs/ppo_{name}.pt")
 
     else:  # report: every trained agent vs forecaster and Kalman trader on the same test markets
-        import glob
-
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        logs = sorted(glob.glob("ppo_*_log.npz"))
+        logs = sorted(RUNS.glob("ppo_*_log.npz"))
         assert logs, "train an agent first"
         fig, ax = plt.subplots(1, len(logs), figsize=(5 * len(logs), 3.6), squeeze=False)
         for i, f in enumerate(logs):
-            name = f.removeprefix("ppo_").removesuffix("_log.npz")
-            pop, h = dict(np.load(name + ".npz")), np.load(f)
+            name = f.name.removeprefix("ppo_").removesuffix("_log.npz")
+            pop, h = dict(np.load(RUNS / f"{name}.npz")), np.load(f)
             agent = Agent()
-            agent.load_state_dict(torch.load(f"ppo_{name}.pt"))
+            agent.load_state_dict(torch.load(RUNS / f"ppo_{name}.pt"))
             p, r, obs, act = evaluate(agent, pop, (h["top"], h["bottom"]))
             fc, rf = kalman_trial(pop, np.inf, 2000, seed=7)
             ka, rk = kalman_trial(pop, 0.3, 2000, seed=7)
@@ -234,5 +233,5 @@ if __name__ == "__main__":
         ax[0, 0].set_ylabel("expected profit per market")
         ax[0, 0].legend(fontsize=7)
         fig.tight_layout()
-        fig.savefig("phase4_ppo.png", dpi=120)
-        print("chart saved to phase4_ppo.png")
+        fig.savefig(FIGURES / "phase4_ppo.png", dpi=120)
+        print("chart saved to figures/phase4_ppo.png")

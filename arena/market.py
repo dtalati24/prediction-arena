@@ -4,7 +4,7 @@ Each market is a binary event. A hidden "score lead" does a random walk (plus ra
 the event happens if the lead is positive at the end. An LMSR market maker trades with the bots.
 All markets run side by side as numpy arrays.
 
-Run `python market.py` for the Phase 1 check and chart.
+Run `python -m arena.market` for the Phase 1 check and chart.
 """
 import numpy as np
 from scipy.special import expit, logit, ndtr
@@ -204,5 +204,6 @@ if __name__ == "__main__":
     axes[0].legend(loc="upper left", fontsize=8)
     axes[-1].set_xlabel("tick")
     fig.tight_layout()
-    fig.savefig("phase1.png", dpi=120)
-    print("chart saved to phase1.png")
+    from arena import FIGURES
+    fig.savefig(FIGURES / "phase1.png", dpi=120)
+    print("chart saved to figures/phase1.png")

@@ -14,13 +14,14 @@ eps_hat = P * sum(s - q) / tau^2 with uncertainty P = 1 / (1/sigma^2 + n/tau^2).
 exactly like a forecaster, on s_t - eps_hat. tau (how noisy it thinks the price is) is the only
 new parameter: tau = inf is a plain forecaster, tau -> 0 copies the price.
 
-Run `python kalman.py` for the checks and the Kalman-vs-forecaster experiment (needs the
-pop*.npz files written by evolve.py).
+Run `python -m arena.kalman` for the checks and the Kalman-vs-forecaster experiment (needs the
+runs/pop*.npz files written by arena.evolve).
 """
 import numpy as np
 
-from evolve import drop_in
-from market import lo, simulate
+from arena import FIGURES, RUNS
+from arena.evolve import drop_in
+from arena.market import lo, simulate
 
 
 def bias_estimate(diff_sum, n, sigma, tau):
@@ -59,8 +60,6 @@ def trial(pop, tau, n_markets, seed):
 
 
 if __name__ == "__main__":
-    import glob
-
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -90,8 +89,8 @@ if __name__ == "__main__":
 
     # Experiment: one Kalman trader in each evolved population, for a range of tau. Same seed =
     # same markets, punters and errors for every tau, so differences are paired.
-    pops = {f: dict(np.load(f)) for f in sorted(glob.glob("pop*.npz")) if "fee" not in f}  # no-fee populations
-    assert pops, "run evolve.py first (it saves the final population)"
+    pops = {f.stem: dict(np.load(f)) for f in sorted(RUNS.glob("pop*.npz")) if "fee" not in f.stem}  # no-fee populations
+    assert pops, "run arena.evolve first (it saves the final population)"
     taus = [0.1, 0.3, 1.0, 3.0, 10.0]
     M = 2000
     fig, ax = plt.subplots(1, 2, figsize=(11, 4))
@@ -121,5 +120,5 @@ if __name__ == "__main__":
     ax[1].set_title("profit per unit of risk (mean / s.d. per market)")
     ax[1].legend(fontsize=7)
     fig.tight_layout()
-    fig.savefig("phase4_kalman.png", dpi=120)
-    print("chart saved to phase4_kalman.png")
+    fig.savefig(FIGURES / "phase4_kalman.png", dpi=120)
+    print("chart saved to figures/phase4_kalman.png")

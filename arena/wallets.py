@@ -9,12 +9,14 @@ public track record (profit on past markets), never its type or genome.
 Does that ledger hold exploitable information? This tests the simplest user of it: a wallet
 watcher that copies (or fades) the wallets at the top (or bottom) of a public leaderboard.
 
-Run `python wallets.py` for the checks and the experiment (needs the pop*.npz files from evolve.py).
+Run `python -m arena.wallets` for the checks and the experiment (needs the runs/pop*.npz files
+from arena.evolve).
 """
 import numpy as np
 
-from evolve import N_EVO, N_PUNT, drop_in, labels
-from market import simulate
+from arena import RUNS
+from arena.evolve import N_EVO, N_PUNT, drop_in, labels
+from arena.market import simulate
 
 WALLETS = N_EVO + N_PUNT  # watchable wallets; a dropped-in trader sits in the column after them
 
@@ -50,8 +52,6 @@ def watcher(watch, sign):
 
 
 if __name__ == "__main__":
-    import glob
-
     # Check: a watcher copying (fading) a wallet that always holds +10 ends up holding +10 (-10).
     def holder(t, price_hist, truth, shares, rng):
         d, z = np.zeros(shares.shape), np.zeros(shares.shape)
@@ -64,8 +64,8 @@ if __name__ == "__main__":
 
     # Experiment: in each evolved population, rank wallets on 2000 past markets, then drop in one
     # watcher on 2000 new markets. Same seed for every watcher, so differences are paired.
-    pops = {f: dict(np.load(f)) for f in sorted(glob.glob("pop*.npz")) if "fee" not in f}  # no-fee populations
-    assert pops, "run evolve.py first (it saves the final population)"
+    pops = {f.stem: dict(np.load(f)) for f in sorted(RUNS.glob("pop*.npz")) if "fee" not in f.stem}  # no-fee populations
+    assert pops, "run arena.evolve first (it saves the final population)"
     M = 2000
     names = np.array(["momentum", "contrarian", "forecaster", "punter"])
     for f, pop in pops.items():

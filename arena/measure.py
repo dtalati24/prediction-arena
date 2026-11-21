@@ -4,13 +4,13 @@ measure(r) turns one simulate() result into numbers. Because the simulator knows
 probability, most measures compare the price with the truth directly instead of waiting for
 outcomes, which is far less noisy.
 
-Run `python measure.py` to check every measure on fake markets where the answer is known.
+Run `python -m arena.measure` to check every measure on fake markets where the answer is known.
 """
 import numpy as np
 from scipy.special import expit
 from scipy.stats import kurtosis
 
-from market import lo
+from arena.market import lo
 
 HORIZON = 20  # ticks after news to follow the price
 
@@ -117,7 +117,7 @@ def dashboard(h, path):
 
 
 if __name__ == "__main__":
-    from market import simulate
+    from arena.market import simulate
 
     # Real markets from the simulator (punters only); we then swap in prices whose answer we know.
     r = simulate(lambda t, ph, v, sh, rng: (5 * rng.standard_normal(sh.shape), np.zeros(sh.shape), np.zeros(sh.shape)),

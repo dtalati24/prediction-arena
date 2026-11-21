@@ -13,8 +13,8 @@ All three keep the accuracy and size they started with. The agent's on-chain wat
 bottom 10 wallets by profit per unit of risk) is re-ranked from the previous generation's public
 results, since wallets change hands as bots die and are replaced.
 
-    python decay.py run pop.npz --gens 200     # one population, all three versions
-    python decay.py report                     # chart from every finished run
+    python -m arena.decay run pop --gens 200   # runs/pop.npz with runs/ppo_pop.pt, all three versions
+    python -m arena.decay report               # chart from every finished run
 """
 import argparse
 import time
@@ -23,10 +23,11 @@ from collections import defaultdict
 import numpy as np
 import torch
 
-from evolve import FORECAST, INFO_COST, N_EVO, N_MARKETS, drop_in, labels, next_generation
-from kalman import with_kalman
-from ppo import LR, Agent, rl_trader, update, watch_list
-from wallets import WALLETS
+from arena import FIGURES, RUNS
+from arena.evolve import FORECAST, INFO_COST, N_EVO, N_MARKETS, drop_in, labels, next_generation
+from arena.kalman import with_kalman
+from arena.ppo import LR, Agent, rl_trader, update, watch_list
+from arena.wallets import WALLETS
 
 VERSIONS = ["forecaster", "frozen", "learning"]
 
@@ -73,7 +74,7 @@ def run(pop, version, agent, gens, seed, log=print):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["run", "report"])
-    ap.add_argument("pop", nargs="?")
+    ap.add_argument("pop", nargs="?", help="population name in runs/, e.g. pop or pop_seed1")
     ap.add_argument("--gens", type=int, default=200)
     ap.add_argument("--versions", nargs="+", default=VERSIONS)
     args = ap.parse_args()
@@ -84,19 +85,18 @@ if __name__ == "__main__":
         for version in args.versions:
             agent = Agent()
             if version != "forecaster":
-                agent.load_state_dict(torch.load(f"ppo_{name}.pt"))
-            h = run(dict(np.load(args.pop)), version, agent, args.gens, seed=1, log=lambda s: print(s, flush=True))
-            np.savez(f"decay_{name}_{version}.npz", **h)
-            print(f"saved decay_{name}_{version}.npz", flush=True)
+                agent.load_state_dict(torch.load(RUNS / f"ppo_{name}.pt"))
+            h = run(dict(np.load(RUNS / f"{name}.npz")), version, agent, args.gens, seed=1,
+                    log=lambda s: print(s, flush=True))
+            np.savez(RUNS / f"decay_{name}_{version}.npz", **h)
+            print(f"saved runs/decay_{name}_{version}.npz", flush=True)
 
     else:
-        import glob
-
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        names = sorted({f.removeprefix("decay_").rsplit("_", 1)[0] for f in glob.glob("decay_*_*.npz")})
+        names = sorted({f.stem.removeprefix("decay_").rsplit("_", 1)[0] for f in RUNS.glob("decay_*_*.npz")})
         assert names, "run some decay experiments first"
         colors = dict(forecaster="black", frozen="tab:red", learning="tab:blue")
         fig, ax = plt.subplots(2, len(names), figsize=(5 * len(names), 6.5), squeeze=False, sharex=True)
@@ -104,7 +104,7 @@ if __name__ == "__main__":
             print(f"== {name}")
             for v in VERSIONS:
                 try:
-                    h = np.load(f"decay_{name}_{v}.npz")
+                    h = np.load(RUNS / f"decay_{name}_{v}.npz")
                 except FileNotFoundError:
                     continue
                 a, G = h["agent"], len(h["agent"])
@@ -127,5 +127,5 @@ if __name__ == "__main__":
         ax[0, 0].legend(fontsize=8)
         ax[1, 0].legend(fontsize=7)
         fig.tight_layout()
-        fig.savefig("phase4_decay.png", dpi=120)
-        print("chart saved to phase4_decay.png")
+        fig.savefig(FIGURES / "phase4_decay.png", dpi=120)
+        print("chart saved to figures/phase4_decay.png")

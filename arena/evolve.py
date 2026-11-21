@@ -3,7 +3,7 @@
 100 strategy bots evolve; 50 punters are fixed (they would otherwise die out and take everyone's
 edge with them). Each generation is 400 fresh markets; fitness is total profit.
 
-Run `python evolve.py` for the Phase 2 run, check and chart.
+Run `python -m arena.evolve` for the Phase 2 run, check and chart.
 """
 import argparse
 import time
@@ -11,8 +11,9 @@ from collections import defaultdict
 
 import numpy as np
 
-from market import lo, simulate
-from measure import SCALARS, dashboard, measure, perfect
+from arena import FIGURES, RUNS
+from arena.market import lo, simulate
+from arena.measure import SCALARS, dashboard, measure, perfect
 
 TREND, FORECAST = 0, 1
 # Insiders (N_INS) are off: with even 2 of them they took most of the profit and starved the
@@ -29,7 +30,7 @@ SWITCH_PROB = 0.05  # chance a child switches between trend follower and forecas
 ERR_CORR = 0.5      # share of forecaster error variance that's common to everyone in a market
                     # (same data, same models); with 0, 50 independent errors average out and
                     # the market is unrealistically close to perfect
-FEE = 0.0           # per share traded; a 1c fee (`python evolve.py --fee 0.01`) left forecasters ~zero profit
+FEE = 0.0           # per share traded; a 1c fee (`python -m arena.evolve --fee 0.01`) left forecasters ~zero profit
 ALPHA_MAX = 100     # size cap; uncapped, forecaster size drifted from 13 to ~1000 and switched
                     # giants turned into momentum bots that caused fake bubbles
 
@@ -165,7 +166,7 @@ if __name__ == "__main__":
     a, b = evolve(5)[1], evolve(5)[1]
     assert all(np.array_equal(a[k], b[k], equal_nan=True) for k in a), "not deterministic"
 
-    # `python evolve.py` runs the main setup; other fees/seeds get suffixed output files.
+    # The default run is the main setup; other fees/seeds/lengths get suffixed output files.
     ap = argparse.ArgumentParser()
     ap.add_argument("--fee", type=float, default=FEE)
     ap.add_argument("--seed", type=int, default=0)
@@ -175,9 +176,9 @@ if __name__ == "__main__":
         + (f"_g{args.gens}" if args.gens != 1000 else "")
     pop, h = evolve(args.gens, seed=args.seed, fee=args.fee, progress=True)
     assert np.allclose(h["share"].sum(1), 1)
-    np.savez(f"phase2{tag}.npz", **h)  # per-generation history, for analysis
-    np.savez(f"pop{tag}.npz", **pop)    # final population, for dropping new agents into
-    dashboard(h, f"phase3{tag}.png")
+    np.savez(RUNS / f"phase2{tag}.npz", **h)  # per-generation history, for analysis
+    np.savez(RUNS / f"pop{tag}.npz", **pop)    # final population, for dropping new agents into
+    dashboard(h, FIGURES / f"phase3{tag}.png")
 
     names = ["momentum", "contrarian", "forecaster"]
     colors = ["tab:red", "tab:green", "tab:blue"]
@@ -208,5 +209,5 @@ if __name__ == "__main__":
     for a_ in ax[1]:
         a_.set_xlabel("generation")
     fig.tight_layout()
-    fig.savefig(f"phase2{tag}.png", dpi=120)
-    print(f"charts saved to phase2{tag}.png and phase3{tag}.png")
+    fig.savefig(FIGURES / f"phase2{tag}.png", dpi=120)
+    print(f"charts saved to figures/phase2{tag}.png and figures/phase3{tag}.png; data in runs/")
