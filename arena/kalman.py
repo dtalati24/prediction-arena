@@ -89,7 +89,8 @@ if __name__ == "__main__":
 
     # Experiment: one Kalman trader in each evolved population, for a range of tau. Same seed =
     # same markets, punters and errors for every tau, so differences are paired.
-    pops = {f.stem: dict(np.load(f)) for f in sorted(RUNS.glob("pop*.npz")) if "fee" not in f.stem}  # no-fee populations
+    pops = {f.stem: dict(np.load(f)) for f in sorted(RUNS.glob("pop*.npz"))
+            if "fee" not in f.stem and "watch" not in f.stem}  # no fee, no wallet watchers
     assert pops, "run arena.evolve first (it saves the final population)"
     taus = [0.1, 0.3, 1.0, 3.0, 10.0]
     M = 2000

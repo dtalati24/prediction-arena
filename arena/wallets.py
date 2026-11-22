@@ -15,10 +15,8 @@ from arena.evolve).
 import numpy as np
 
 from arena import RUNS
-from arena.evolve import N_EVO, N_PUNT, drop_in, labels
+from arena.evolve import N_PUNT, NAMES, WALLETS, drop_in, labels
 from arena.market import simulate
-
-WALLETS = N_EVO + N_PUNT  # watchable wallets; a dropped-in trader sits in the column after them
 
 
 def idle(base, err, sigma, size):
@@ -64,13 +62,14 @@ if __name__ == "__main__":
 
     # Experiment: in each evolved population, rank wallets on 2000 past markets, then drop in one
     # watcher on 2000 new markets. Same seed for every watcher, so differences are paired.
-    pops = {f.stem: dict(np.load(f)) for f in sorted(RUNS.glob("pop*.npz")) if "fee" not in f.stem}  # no-fee populations
+    pops = {f.stem: dict(np.load(f)) for f in sorted(RUNS.glob("pop*.npz"))
+            if "fee" not in f.stem and "watch" not in f.stem}  # no fee, no wallet watchers
     assert pops, "run arena.evolve first (it saves the final population)"
     M = 2000
-    names = np.array(["momentum", "contrarian", "forecaster", "punter"])
+    names = np.array(NAMES + ["punter"])
     for f, pop in pops.items():
         boards = leaderboard(pop, M, seed=100)
-        kind = np.r_[labels(pop), np.full(N_PUNT, 3)]
+        kind = np.r_[labels(pop), np.full(N_PUNT, len(NAMES))]
         print(f"== {f}")
         for by, board in boards.items():
             rank = np.argsort(-board)  # best first

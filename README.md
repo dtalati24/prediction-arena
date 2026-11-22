@@ -16,15 +16,18 @@ an edge against a population that evolves around them.
   risk) earns about as much as a forecaster, with no information of its own.
 - **An RL agent (PPO) earns ~4x a forecaster**, still more than a forecaster with no size cap. It also
   found a loophole in the market design within 2 training iterations, which is now fixed.
-- **Its edge doesn't decay** over 200 generations of co-evolution: no species in the population can
-  target a single wallet.
+- **Its edge shows no clear decay** over 200 generations of co-evolution, including when the
+  population can evolve wallet watchers that copy or fade wallets by leaderboard spot: they almost
+  never land on the agent.
+- **Watchers become copy-trading herds.** They take over the trend bots' do-little niche at times,
+  and when they dominate they can pile into the same positions; big mispricings are more common then.
 
 ## Repository layout
 
 | | |
 |---|---|
 | `arena/market.py` | the market: truth process, LMSR market maker, uniform-price batch auction (Phase 1) |
-| `arena/evolve.py` | the evolving bot population (Phase 2) |
+| `arena/evolve.py` | the evolving bot population (Phase 2); `--watchers` adds an evolving wallet-watcher species (Phase 4) |
 | `arena/measure.py` | market-quality measures and dashboard (Phase 3) |
 | `arena/kalman.py` | Bayesian (Kalman-filter) trader (Phase 4) |
 | `arena/wallets.py` | public wallet ledger and copy-trading watchers (Phase 4) |
@@ -288,8 +291,86 @@ still learning (one PPO update per generation).
   without the agent. No evolving species can single out one wallet, so the agent's cut never becomes
   something selection can target; all three traders simply rise and fall with the forecasters'
   boom-and-bust cycle.
-- That's the motivation for the next experiment: an evolving "wallet watcher" species that can copy
-  or fade specific wallets, giving the population a way to hunt the agent.
+- So the next experiment gives the population a way to hunt the agent: an evolving wallet-watcher
+  species that can copy or fade specific wallets.
+
+### An evolving wallet-watcher species (`arena/evolve.py --watchers`)
+
+A third species that evolves alongside trend bots and forecasters. Every wallet's position is
+public, and so is a leaderboard of last generation's profits (ranked by raw profit, or by profit
+per unit of risk). A watcher's genome picks:
+
+- **a spot on the leaderboard** (0 = top, 1 = bottom) and which ranking to use;
+- **alpha**: + copies the wallet in that spot, - fades it, and how big;
+- **lag**: it holds alpha x (the wallet's position now - its position lag ticks ago). A short lag
+  follows the wallet's latest trades; a whole-market lag copies its entire position.
+
+It watches a spot, not a fixed wallet, since wallets change hands as bots die. A bot born this
+generation isn't ranked (its column's record belongs to the bot it replaced), and no watcher
+watches itself. Positions are seen after the previous tick's trades, as on chain.
+
+**Checks:** a watcher holds exactly alpha x (the wallet's move), and the leaderboard picks the right
+wallet. One-off tests also found that a watcher copying the top wallet earns what `wallets.py`'s
+dropped-in copier does on the same markets (+0.33 per market), and that with watchers off, short
+reference runs (15 generations of evolution, a Kalman drop-in, 3 generations of decay) give the same
+numbers as before. The longer experiments weren't rerun. Two traps found by investigating odd
+results, each now covered by a check:
+
+- **Ties.** Watchers often end a generation on exactly 0, and numpy's sort favoured some columns
+  among ties: in a test, all tie deaths fell in the first 40 of 100. Ties are now broken at random.
+- **Switching species.** A forecaster's child that became a watcher kept its size (~100), copied at
+  100x, lost ~40 per market and fed everyone else for a generation (a PPO agent trained on a
+  snapshot with two of them earned 5x its usual profit). A switching child now starts at its new
+  species' usual size.
+
+![Evolution with wallet watchers, seed 0](figures/phase2_watch.png)
+
+| 1000 generations, averages over the last 200 | seed 0 | seed 1 | seed 2 | without watchers |
+|---|---|---|---|---|
+| watchers | 67% | 4% | 3% | - |
+| trend bots | 8% | 73% | 75% | 77-79% |
+| forecasters | 25% | 23% | 22% | 22-23% |
+| price-to-truth gap | 0.043 | 0.045 | 0.044 | 0.043-0.045 |
+
+- **Watchers compete for the trend bots' niche, not the forecasters'.** Both trade little and lose
+  little (watchers lose 0.25-0.39 per market). The niche flips between them: watchers held over 80%
+  of the population for 42-107 generations in every seed.
+- **They don't copy the winners.** They sit mid-board (median spot 0.35-0.55) and watch other
+  watchers, trend bots and punters; under 10% watch a forecaster. In a one-off test, ten copiers
+  planted near the top of the board (spot 0.05, one random draw per population) earned -2.05 to
+  +0.68 per market in their first generation, and 10 generations later no bot had those traits.
+  Why isn't established; a small, noisy edge is one possible reason.
+- **Copy-trading herds.** When watchers dominate they form copy chains and loops (in one case 8
+  watchers in a loop whose sizes multiplied to 1.15, so positions grew round it) that pile into the
+  same positions. The median gap is 0.050-0.052 when watchers are over 80% of the population, vs
+  0.042 when they are under 20%. Watchers are the majority in 49% of all generations but in 71% (49
+  of 69) of those with a gap above 0.08, when forecasters are also scarce (~6% vs ~24%): an
+  association, since scarce forecasters hurt prices by themselves. In some of these generations
+  forecasters and the agent earn many times their usual profit.
+
+**Edge decay, rematch.** The same experiment as above on the watcher populations, with PPO retrained
+on each (+2.1 to +2.6 per market after training). The dropped-in trader is now a wallet on the
+leaderboard like any other, so watchers can pick it.
+
+![Edge decay with wallet watchers](figures/phase4_decay_watch.png)
+
+| median expected profit per market, first -> last 25 generations | forecaster | PPO frozen | PPO learning |
+|---|---|---|---|
+| seed 0 | +0.78 -> +0.77 | +1.93 -> +1.99 | +2.01 -> +2.29 |
+| seed 1 | +0.87 -> +0.99 | +2.27 -> +2.18 | +2.09 -> +2.30 |
+| seed 2 | +0.74 -> +0.65 | +2.26 -> +1.95 | +1.92 -> +2.40 |
+
+(Medians, because a few generations pay many times the usual profit.)
+
+- **No clear decay.** The agent keeps 2-3x the forecaster's profit. The frozen agent's median moves
+  by +3%, -4% and -14% over 25-generation windows (-10%, -7%, -4% over 50-generation windows), and
+  the learning agent's rises in all three seeds over both windows.
+- **Almost no hunting.** Averaged over each run, under 1% of watchers watch the agent, and some do
+  in at most 9 of the 200 generations.
+- **A limit of this test:** a watcher follows a spot, not a wallet, and the agent's spot moves. In 5
+  test generations per population it ranged from 0 to 30 by profit and 1 to 62 by profit per risk.
+  So this genome can't lock on to one wallet. The result shows that this species doesn't hunt the
+  agent, not that no adaptive population could.
 
 ## Run it
 
@@ -306,6 +387,10 @@ python -m arena.kalman        # Kalman checks + experiment (~10 min)
 python -m arena.wallets       # wallet checks + watcher experiment (~20 min)
 python -m arena.ppo train pop # PPO checks + training on runs/pop.npz (~10 min); then `report`
 python -m arena.decay run pop # edge decay (~30 min); then `report`
+
+python -m arena.evolve --watchers   # with wallet watchers (~40 min); saves runs/pop_watch.npz
+python -m arena.ppo train pop_watch # then the same PPO and decay steps on it
+python -m arena.decay run pop_watch
 ```
 
 The results here use seeds 0, 1 and 2 (`--seed 1` saves `runs/pop_seed1.npz`, trained on with
@@ -316,7 +401,6 @@ The results here use seeds 0, 1 and 2 (`--seed 1` saves `runs/pop_seed1.npz`, tr
 1. ~~Market core~~
 2. ~~Evolving bot population~~
 3. ~~Measurement~~
-4. ~~Learning agents: Kalman trader, visible wallets, PPO agent, edge decay~~; next, an evolving
-   wallet-watcher species that can target the agent
+4. ~~Learning agents: Kalman trader, visible wallets, PPO agent, edge decay, evolving wallet watchers~~
 5. Stress test: plug in your own bot and see how fast an adaptive population erodes its edge
 6. Animated arena
