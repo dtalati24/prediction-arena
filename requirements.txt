@@ -2,3 +2,5 @@ numpy
 scipy
 matplotlib
 torch  # Phase 4 PPO agent; CPU build is enough
+numba  # the order book's matching engine
+pyarrow  # only arena/retail_data.py, which reads the trade data

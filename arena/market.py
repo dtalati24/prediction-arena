@@ -39,7 +39,8 @@ def simulate(order_fn, n_bots, n_markets=100, T=200, b=50.0, sigma=1.0,
     steps += news * news_size * rng.standard_normal((T, M))
     lead = np.vstack([np.zeros(M), steps.cumsum(0)])
     left = np.arange(T, 0, -1)[:, None]
-    # Note: normal approximation ignores the jumps' fat tails; fine while jumps are rare
+    # TODO(order book): this normal approximation ignores the jumps' fat tails, so it is up to 4.3
+    # points off in the last ticks. The exact formula is under "Known issues" in the README.
     truth = np.vstack([ndtr(lead[:-1] / np.sqrt(var * left)), lead[-1] > 0])
 
     x = np.zeros(M)  # net YES shares the LMSR has sold; its price is expit(x / b)

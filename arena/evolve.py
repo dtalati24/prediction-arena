@@ -71,12 +71,19 @@ def targets(pop, profit):
     then any dropped-in trader), all public on chain. A wallet is ranked only on a record of its
     own, so a strategy bot born this generation is left off (its column's record belongs to the bot
     it replaced); and no watcher watches itself. Returns (N_EVO,) wallet columns, -1 for non-watchers.
+
+    With a "lock" gene (arena.decay --lock), a locked watcher keeps the wallet it already watches
+    until that wallet's owner dies, wherever it moves on the leaderboard. Children inherit the wallet.
     """
     has_record = np.r_[pop["age"] > 0, np.ones(profit.shape[1] - N_EVO, bool)]
     boards = [profit.mean(0), profit.mean(0) / (profit.std(0) + 1e-9)]  # board 0 profit, 1 profit per risk
     ranked = [[c for c in np.argsort(-b, kind="stable") if has_record[c]] for b in boards]  # best first
     out = np.full(N_EVO, -1)
     for j in np.flatnonzero(pop["kind"] == WATCH):
+        held = pop["target"][j]
+        if "lock" in pop and pop["lock"][j] and held >= 0 and held != j and has_record[held]:
+            out[j] = held
+            continue
         others = [c for c in ranked[pop["board"][j]] if c != j]
         out[j] = others[round(pop["rank"][j] * (len(others) - 1))]
     return out
@@ -125,7 +132,7 @@ def labels(pop):
     return np.select([pop["kind"] == FORECAST, pop["kind"] == WATCH], [2, np.where(up, 3, 4)], np.where(up, 0, 1))
 
 
-def next_generation(pop, fitness, rng):
+def next_generation(pop, fitness, rng, watch_step=1.0):
     if "rank" in pop:
         # Watchers often end a generation on exactly 0 (watching wallets that hold nothing), and
         # argsort orders ties by column, so the low columns would always die first and the high
@@ -141,7 +148,8 @@ def next_generation(pop, fitness, rng):
         pop[k][dead] = pop[k][parents]
     lag = pop["lag"][dead].copy()
     # Mutate the children only.
-    pop["alpha"][dead] = np.clip(pop["alpha"][dead] + rng.normal(0, 0.2 * np.abs(pop["alpha"][dead]) + 1),
+    step = np.where(pop["kind"][dead] == WATCH, watch_step, 1)  # absolute part of the size mutation
+    pop["alpha"][dead] = np.clip(pop["alpha"][dead] + rng.normal(0, 0.2 * np.abs(pop["alpha"][dead]) + step),
                                  -ALPHA_MAX, ALPHA_MAX)
     lag_step = rng.integers(-3, 4, N_DIE)
     pop["lag"][dead] = np.clip(lag + lag_step, 1, 50)
@@ -166,6 +174,9 @@ def next_generation(pop, fitness, rng):
     pop["rank"][dead] = np.clip(pop["rank"][dead] + rng.normal(0, RANK_STEP, N_DIE), 0, 1)
     swap = dead[rng.random(N_DIE) < SWITCH_PROB]
     pop["board"][swap] = 1 - pop["board"][swap]
+    if "lock" in pop:
+        swap = dead[rng.random(N_DIE) < SWITCH_PROB]
+        pop["lock"][swap] = 1 - pop["lock"][swap]
     pop["age"] += 1
     pop["age"][dead] = 0
     return pop
@@ -180,7 +191,8 @@ def drop_in(pop, make_agent, n_markets, seed, sigma=None, size=None):
     passing it). Agents that need neither ignore them. Returns the trader's expected profit per
     market and the simulation (with r["trades"], its trades per tick): each trade is
     valued at the true probability when it was made instead of at the final 0/1 outcome, which has
-    the same average but removes the luck of how each market resolved (most of the noise).
+    about the same average (see "Known issues" in the README) but removes the luck of how each
+    market resolved (most of the noise).
     """
     fc = pop["kind"] == FORECAST
     sigma = np.median(pop["sigma"][fc]) if sigma is None else sigma
@@ -308,6 +320,22 @@ if __name__ == "__main__":
     # A dropped-in trader (column WALLETS) is on the leaderboard too.
     assert targets(pop, np.c_[profit, np.full(10, 9.0)])[1] == WALLETS
 
+    # Lock-on: a locked watcher keeps its wallet when that wallet's spot changes; it picks again by
+    # spot only when the owner dies, when it has no wallet yet, or when the wallet is its own.
+    locked = {**{k: v.copy() for k, v in pop.items()}, "lock": np.zeros(N_EVO, int)}
+    locked["lock"][1], locked["target"][1] = 1, 7
+    assert targets(locked, profit)[1] == 7, "a locked watcher lost its wallet"
+    locked["age"][7] = 0
+    assert targets(locked, profit)[1] == WALLETS - 1, "a locked watcher followed a dead wallet's column"
+    for held in [-1, 1]:
+        locked["target"][1] = held
+        assert targets(locked, profit)[1] == WALLETS - 1, "a locked watcher should have picked by spot"
+    last_place = np.c_[profit, np.full(10, -9.0)]  # a dropped-in trader at the bottom of the board
+    locked["kind"][:], locked["lock"][:], locked["target"][:] = WATCH, 1, WALLETS
+    assert (targets(locked, last_place) == WALLETS).all(), "lock-on should hold whatever the spot"
+    child = next_generation(locked, np.arange(N_EVO, dtype=float), np.random.default_rng(4))
+    assert (targets(child, last_place) == WALLETS).sum() > 90, "children should inherit the wallet"
+
     # Watcher check 3: when many bots tie on exactly 0, which of them die doesn't depend on their
     # column. 10 losers, 70 on zero, 20 winners: 10 of the zeros die each generation.
     rng = np.random.default_rng(3)
@@ -328,6 +356,14 @@ if __name__ == "__main__":
         child = next_generation(pop, np.arange(N_EVO, dtype=float), rng)
         switched += list(child["alpha"][child["kind"] != FORECAST])
     assert len(switched) > 50 and np.abs(switched).max() < 15, (len(switched), np.abs(switched).max())
+    # A fine mutation step keeps a quiet watcher's children quiet; the standard step doesn't.
+    quiet = random_population(np.random.default_rng(2), watchers=True)
+    quiet["kind"][:], quiet["alpha"][:] = WATCH, 0.25
+    for s, stays in [(0.02, True), (1.0, False)]:
+        kids = next_generation(quiet, np.arange(N_EVO, dtype=float), np.random.default_rng(3), watch_step=s)
+        born = (kids["age"] == 0) & (kids["kind"] == WATCH)
+        assert (np.abs(kids["alpha"][born]).max() < 0.6) == stays, f"watch_step {s} has no effect"
+
     print("watcher checks passed")
 
     # The default run is the main setup; other fees/seeds/lengths get suffixed output files.
